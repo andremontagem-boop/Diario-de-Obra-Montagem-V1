@@ -4,7 +4,7 @@ from lxml import etree
 from io import BytesIO
 
 # ======================================================
-# CONFIGURAÇÃO DA PÁGINA
+# CONFIGURAÇÃO DA APLICAÇÃO
 # ======================================================
 st.set_page_config(
     page_title="Diário de Obra – Montagem",
@@ -12,19 +12,26 @@ st.set_page_config(
 )
 
 st.title("Gerador de Diário de Obra – Montagem")
-st.write("Processa cronograma do MS Project (XML) conforme padrão validado.")
+st.write(
+    "Importe o cronograma do MS Project (XML). "
+    "O sistema gera o XLSX exatamente no padrão aceito pelo Diário de Obra."
+)
 
 # ======================================================
-# FUNÇÃO PRINCIPAL (BASEADA NO PDF)
+# FUNÇÃO PRINCIPAL
 # ======================================================
 def gerar_diario_obra(xml_file):
     tree = etree.parse(xml_file)
     root = tree.getroot()
 
+    # Namespace fixo do MS Project
     ns = {"ms": "http://schemas.microsoft.com/project"}
 
     registros = []
 
+    # --------------------------------------------------
+    # LEITURA DAS TAREFAS
+    # --------------------------------------------------
     for task in root.findall(".//ms:Task", ns):
         nome = task.findtext("ms:Name", default="", namespaces=ns).strip()
         nivel = task.findtext("ms:OutlineLevel", default="", namespaces=ns).strip()
@@ -44,20 +51,23 @@ def gerar_diario_obra(xml_file):
 
     df = pd.DataFrame(registros)
 
-    # ======================================================
+    # --------------------------------------------------
     # LOCALIZA MARCO MONTAGEM (EXATO, NÍVEL 2)
-    # ======================================================
+    # --------------------------------------------------
     marco_idx = df[
         (df["nivel"] == 2) &
         (df["nome"] == "MONTAGEM")
     ].index
 
     if marco_idx.empty:
-        raise RuntimeError("Marco 'MONTAGEM' (nível 2) não encontrado.")
+        raise RuntimeError("Marco 'MONTAGEM' (nível 2) não encontrado no cronograma.")
 
     inicio = marco_idx[0]
     fim = len(df)
 
+    # --------------------------------------------------
+    # CORTE HIERÁRQUICO (APÓS MONTAGEM)
+    # --------------------------------------------------
     for i in range(inicio + 1, len(df)):
         if df.loc[i, "nivel"] <= 2:
             fim = i
@@ -65,9 +75,9 @@ def gerar_diario_obra(xml_file):
 
     df = df.iloc[inicio:fim].reset_index(drop=True)
 
-    # ======================================================
-    # NUMERAÇÃO HIERÁRQUICA (IGUAL AO PDF)
-    # ======================================================
+    # --------------------------------------------------
+    # NUMERAÇÃO HIERÁRQUICA (ITEM)
+    # --------------------------------------------------
     contador = {}
     itens = []
 
@@ -88,16 +98,16 @@ def gerar_diario_obra(xml_file):
 
     df["Item"] = itens
 
-    # ======================================================
-    # ETAPA x TAREFA (BASEADO EM FILHOS)
-    # ======================================================
+    # --------------------------------------------------
+    # DEFINIÇÃO ETAPA x TAREFA
+    # --------------------------------------------------
     df["nivel_prox"] = df["nivel"].shift(-1)
     df["TIPO"] = df["nivel_prox"] > df["nivel"]
     df["TIPO"] = df["TIPO"].apply(lambda x: "ETAPA" if x else "TAREFA")
 
-    # ======================================================
-    # EXCEL FINAL (IGUAL AO MODELO DO PDF)
-    # ======================================================
+    # --------------------------------------------------
+    # MONTAGEM DO XLSX FINAL (PADRÃO VALIDADO)
+    # --------------------------------------------------
     df_final = pd.DataFrame({
         "Item": df["Item"],
         "Descrição": df["nome"],
@@ -127,19 +137,19 @@ uploaded = st.file_uploader(
 )
 
 if uploaded:
-    st.info("Arquivo carregado. Processando conforme padrão validado…")
+    st.info("Arquivo carregado. Processando conforme padrão oficial…")
 
     try:
         df_res, excel = gerar_diario_obra(uploaded)
 
         st.success(
-            f"Processamento concluído. {len(df_res)} linhas geradas."
+            f"Processamento concluído com sucesso. {len(df_res)} linhas geradas."
         )
 
         st.download_button(
-            "📥 Baixar Diário de Obra",
-            excel,
-            file_name="diario_obra_montagem.xlsx",
+            label="📥 Baixar arquivo XLSX",
+            data=excel,
+            file_name="lista-de-tarefas.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
