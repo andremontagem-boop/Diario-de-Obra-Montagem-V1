@@ -12,84 +12,68 @@ st.set_page_config(
 )
 
 st.title("Gerador de Diário de Obra – Montagem")
-st.write(
-    "Faça upload do cronograma em XML (Project). "
-    "O sistema extrai automaticamente apenas a etapa de **MONTAGEM**."
-)
+st.write("Processa cronograma do MS Project (XML) conforme padrão validado.")
 
 # ======================================================
-# FUNÇÃO PRINCIPAL
+# FUNÇÃO PRINCIPAL (BASEADA NO PDF)
 # ======================================================
 def gerar_diario_obra(xml_file):
     tree = etree.parse(xml_file)
     root = tree.getroot()
 
-    # Detecta namespace automaticamente
-    if root.tag.startswith("{"):
-        ns_uri = root.tag.split("}")[0].replace("{", "")
-        ns = {"ms": ns_uri}
-        task_path = ".//ms:Task"
-        def get_text(el, tag):
-            return el.findtext(f"ms:{tag}", default="", namespaces=ns)
-    else:
-        ns = None
-        task_path = ".//Task"
-        def get_text(el, tag):
-            return el.findtext(tag, default="")
+    ns = {"ms": "http://schemas.microsoft.com/project"}
 
-    tasks = []
+    registros = []
 
-    for task in root.findall(task_path, ns):
-        name = get_text(task, "Name").strip()
-        outline = get_text(task, "OutlineLevel").strip()
-        percent = get_text(task, "PercentComplete").strip()
+    for task in root.findall(".//ms:Task", ns):
+        nome = task.findtext("ms:Name", default="", namespaces=ns).strip()
+        nivel = task.findtext("ms:OutlineLevel", default="", namespaces=ns).strip()
+        percentual = task.findtext("ms:PercentComplete", default="0", namespaces=ns)
 
-        if not name or not outline.isdigit():
+        if not nome or not nivel.isdigit():
             continue
 
-        tasks.append({
-            "name": name,
-            "outline_level": int(outline),
-            "percent_complete": float(percent) if percent else 0.0
+        registros.append({
+            "nome": nome,
+            "nivel": int(nivel),
+            "percentual": float(percentual)
         })
 
-    if not tasks:
-        raise RuntimeError("Nenhuma tarefa encontrada no XML.")
+    if not registros:
+        raise RuntimeError("Nenhuma tarefa válida encontrada no XML.")
 
-    df = pd.DataFrame(tasks)
-    df["name_lower"] = df["name"].str.lower()
+    df = pd.DataFrame(registros)
 
     # ======================================================
-    # LOCALIZA MARCO MONTAGEM (NÍVEL 2)
+    # LOCALIZA MARCO MONTAGEM (EXATO, NÍVEL 2)
     # ======================================================
-    idx = df[
-        (df["outline_level"] == 2) &
-        (df["name_lower"].str.contains("montagem"))
+    marco_idx = df[
+        (df["nivel"] == 2) &
+        (df["nome"] == "MONTAGEM")
     ].index
 
-    if idx.empty:
-        raise RuntimeError(
-            "Nenhuma etapa contendo 'montagem' foi encontrada no nível 2 do cronograma."
-        )
+    if marco_idx.empty:
+        raise RuntimeError("Marco 'MONTAGEM' (nível 2) não encontrado.")
 
-    inicio = idx[0]
+    inicio = marco_idx[0]
     fim = len(df)
 
     for i in range(inicio + 1, len(df)):
-        if df.loc[i, "outline_level"] <= 2:
+        if df.loc[i, "nivel"] <= 2:
             fim = i
             break
 
     df = df.iloc[inicio:fim].reset_index(drop=True)
 
     # ======================================================
-    # NUMERAÇÃO HIERÁRQUICA
+    # NUMERAÇÃO HIERÁRQUICA (IGUAL AO PDF)
     # ======================================================
     contador = {}
     itens = []
 
     for _, row in df.iterrows():
-        nivel = row["outline_level"]
+        nivel = row["nivel"]
+
         contador.setdefault(nivel, 0)
         contador[nivel] += 1
 
@@ -97,31 +81,32 @@ def gerar_diario_obra(xml_file):
             if k > nivel:
                 contador[k] = 0
 
-        itens.append(
-            ".".join(str(contador[i]) for i in sorted(contador) if contador[i] > 0)
+        item = ".".join(
+            str(contador[n]) for n in sorted(contador) if contador[n] > 0
         )
+        itens.append(item)
 
     df["Item"] = itens
 
     # ======================================================
-    # DEFINIÇÃO ETAPA / TAREFA
+    # ETAPA x TAREFA (BASEADO EM FILHOS)
     # ======================================================
-    df["next_level"] = df["outline_level"].shift(-1)
-    df["TIPO"] = df["next_level"] > df["outline_level"]
+    df["nivel_prox"] = df["nivel"].shift(-1)
+    df["TIPO"] = df["nivel_prox"] > df["nivel"]
     df["TIPO"] = df["TIPO"].apply(lambda x: "ETAPA" if x else "TAREFA")
 
     # ======================================================
-    # EXCEL FINAL (PADRÃO DIÁRIO DE OBRA)
+    # EXCEL FINAL (IGUAL AO MODELO DO PDF)
     # ======================================================
     df_final = pd.DataFrame({
         "Item": df["Item"],
-        "Descrição": df["name"],
+        "Descrição": df["nome"],
         "Etapa": df["TIPO"].apply(lambda x: "etapa" if x == "ETAPA" else ""),
         "Unidade": "",
         "Quantidade": "",
         "Realizado": "",
         "Porcentagem": df.apply(
-            lambda r: "" if r["TIPO"] == "ETAPA" else r["percent_complete"],
+            lambda r: "" if r["TIPO"] == "ETAPA" else r["percentual"],
             axis=1
         )
     })
@@ -134,27 +119,26 @@ def gerar_diario_obra(xml_file):
 
 
 # ======================================================
-# INTERFACE
+# INTERFACE STREAMLIT
 # ======================================================
 uploaded = st.file_uploader(
-    "Upload do cronograma (XML)",
+    "Upload do cronograma (XML do MS Project)",
     type=["xml"]
 )
 
 if uploaded:
-    st.info("Arquivo carregado. Processando cronograma…")
+    st.info("Arquivo carregado. Processando conforme padrão validado…")
 
     try:
-        df_resultado, excel = gerar_diario_obra(uploaded)
+        df_res, excel = gerar_diario_obra(uploaded)
 
         st.success(
-            f"Processamento concluído. "
-            f"{len(df_resultado)} linhas de montagem identificadas."
+            f"Processamento concluído. {len(df_res)} linhas geradas."
         )
 
         st.download_button(
-            label="📥 Baixar Diário de Obra",
-            data=excel,
+            "📥 Baixar Diário de Obra",
+            excel,
             file_name="diario_obra_montagem.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
